@@ -1,4 +1,18 @@
 (function () {
+    // rewrite url /main/https:/google.com /main/https://google.com without refreshing the page
+    var rewriteDoubleSlash = window.location.pathname.match(/\/main(?<mod>\/[^\/_]+_)?(?<url_preslash>\/(?:http|ws)s?:\/)(?<url_postslash>[^\/].*)/);
+    if (rewriteDoubleSlash) {
+        window.history.pushState(null, null, '/main' + (rewriteDoubleSlash.groups.mod || '') + rewriteDoubleSlash.groups.url_preslash + '/' + rewriteDoubleSlash.groups.url_postslash + window.location.hash);
+    }
+    var mergeDoubleSlash = function (url) {
+        // only merge if server forcefully merges and url is not a blob or data
+        if (!rewriteDoubleSlash || !/^((http|ws)s?:\/)/.test(url.toString())) {
+            return url;
+        }
+        // don't merge the real protocol of the url
+        return url.toString().slice(0, 7) + url.toString().slice(7).replace(/\/+/g, '/');
+    };
+
     var proxy_dest_split = window.location.pathname.split(/(?=\/)/);
     var proxy_prefix = window.location.protocol + "//" + window.location.host;
     var proxy_path = proxy_dest_split.shift() + "/";
@@ -40,14 +54,26 @@
             return this._womginx_replaceState(stateObj, title, url);
         };
 
-        // force reload discord when it pushStates to discord.com/app to fix broken UI
-        window.history._womginx_pushState = window.history.pushState;
-        window.history.pushState = function (stateObj, title, url) {
-            this._womginx_pushState(stateObj, title, url);
-            if (url === proxy_prefix + proxy_path + "https://discord.com/app") {
-                window.location.reload();
+        // auto-merge slashes if server merges them with redirects (which break non-GET requests such as POST)
+        window.XMLHttpRequest.prototype._womginx_open = window.XMLHttpRequest.prototype.open;
+        window.XMLHttpRequest.prototype.open = function (method, url, async, username, password) {
+            return this._womginx_open(method, mergeDoubleSlash(url), async, username, password);
+        };
+        window.XMLHttpRequest.prototype.url
+        window._womginx_fetch = window.fetch;
+        window.fetch = function (input, init) {
+            if (typeof input === 'string') {
+                return window._womginx_fetch(mergeDoubleSlash(input), init);
             }
-            return;
+            var request = new Request(input, init);
+            return _womginx_fetch(mergeDoubleSlash(input.url), request);
+        };
+
+        // add websocket origin support and auto-merge slashes
+        window._womginx_WebSocket = window.WebSocket;
+        window.WebSocket = function (url, protocols) {
+            url = url + '?womginx_ws_origin_header=' + dest_scheme + '://' + dest_host;
+            return new window._womginx_WebSocket(mergeDoubleSlash(url), protocols);
         };
 
         // disable Date.now as it breaks hashing functionality in sites like discord
@@ -76,7 +102,7 @@
                 timeoutLocalStorage = setTimeout(function () {
                     timeoutLocalStorage = -1;
                     localStorageSetItem.call(localStorage, dest_host, JSON.stringify(hostLocalStorage));
-                }, 100);
+                }, 50);
             }
         };
         localStorage.key = function (number) {
@@ -106,11 +132,6 @@
         window._womginx_Blob = window.Blob;
         window.Blob = function (data, options = {}) {
             return new window._womginx_Blob(data, options);
-        };
-        // add websocket origin support
-        window._womginx_WebSocket = window.WebSocket;
-        window.WebSocket = function(url, protocols) {
-            return new window._womginx_WebSocket(url + '?womginx_ws_origin_header=' + dest_scheme + '://' + dest_host, protocols);
         };
         // fix rewriteWorker on instances of "TrustedScriptURL"
         // and also rewrite them and fetch the code using synchronous xhr to rewrite them using client js
@@ -285,13 +306,6 @@
             },
             get pathname() {
                 updateLocationObj();
-                // https://discord.com/(app|channels) breaks if pathname is rewritten, and is the only site
-                // that does this, so I am hard coding an exception. However, the discord.com "breaks"
-                // if the pathname is *not* rewritten since not rewriting it "breaks" the code which
-                // upon successful execution, will break the website. So.. breaking the code to not break the site
-                if (/^https:\/\/discord\.com\/(app|channels)/.test(locationObj.href)) {
-                    return window.location.pathname;
-                }
                 return locationObj.pathname;
             },
             set pathname(value) {
